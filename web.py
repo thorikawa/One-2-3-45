@@ -77,6 +77,10 @@ def upload():
         </form>
     '''
 
+@route('/assets/<filepath:path>', name='assets')
+def server_static(filepath):
+    return static_file(filepath, root=shape_dir)
+
 @route('/upload', method='POST')
 def do_upload():
     upload = request.files.get('upload', '')
@@ -85,7 +89,7 @@ def do_upload():
 
     filename = upload.filename.lower()
     root, ext = os.path.splitext(filename)
-    save_path = os.path.join(f'{os.path.dirname(__file__)}/exp', filename)
+    save_path = os.path.join(shape_dir, filename)
     upload.save(save_path, overwrite=True)
 
     device = f"cuda:{args.gpu_idx}"
@@ -108,7 +112,7 @@ def do_upload():
     print("===step3===")
     mesh_path = reconstruct(shape_dir, output_format=args.output_format, device_idx=args.gpu_idx, resolution=args.mesh_resolution)
     print("Mesh saved to:", mesh_path)
-    body = {"status": 0, "path": mesh_path}
+    body = {"status": 0, "path": "/assets/mesh.obj"}
     return body
 
 if __name__ == "__main__":
