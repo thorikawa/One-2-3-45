@@ -88,7 +88,7 @@ def server_static(filepath):
 
 @route('/upload', method='POST')
 def do_upload():
-    upload = request.files.get('upload', '')
+    upload = request.files.get('image', '')
     if not upload.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
         return 'File extension not allowed!'
 
