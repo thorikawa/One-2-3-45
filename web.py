@@ -7,6 +7,11 @@ from utils.sam_utils import sam_init, sam_out_nosave
 from utils.utils import pred_bbox, image_preprocess_nosave, gen_poses, convert_mesh_format
 from elevation_estimate.estimate_wild_imgs import estimate_elev
 from bottle import route, run, template, request, static_file, url, get, post, response, error, abort, redirect, os
+import datetime
+import uuid
+
+t_delta = datetime.timedelta(hours=9)
+JST = datetime.timezone(t_delta, 'JST')
 
 def stage1_run(model, device, exp_dir,
                input_im, scale, ddim_steps):
@@ -79,13 +84,21 @@ def upload():
 
 @route('/assets/<filepath:path>', name='assets')
 def server_static(filepath):
-    return static_file(filepath, root=shape_dir)
+    return static_file(filepath, root=base_shape_dir)
 
 @route('/upload', method='POST')
 def do_upload():
     upload = request.files.get('upload', '')
     if not upload.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
         return 'File extension not allowed!'
+
+    now = datetime.datetime.now(JST)
+    d = '{:%Y%m%d%H%M%S}'.format(now)
+    short_id = str(uuid.uuid4())[:8]
+    dir_name = f"{d}_{short_id}"
+    shape_dir = os.path.join(base_shape_dir, dir_name)
+    os.makedirs(shape_dir, exist_ok=True)
+    print(shape_dir)
 
     filename = upload.filename.lower()
     root, ext = os.path.splitext(filename)
@@ -112,7 +125,7 @@ def do_upload():
     print("===step3===")
     mesh_path = reconstruct(shape_dir, output_format=args.output_format, device_idx=args.gpu_idx, resolution=args.mesh_resolution)
     print("Mesh saved to:", mesh_path)
-    body = {"status": 0, "path": "/assets/mesh.obj"}
+    body = {"status": 0, "data": f"http://20.168.237.190:8000/assets/{dir_name}/mesh.obj"}
     return body
 
 if __name__ == "__main__":
@@ -126,8 +139,8 @@ if __name__ == "__main__":
 
     assert(torch.cuda.is_available())
 
-    shape_dir = f"./exp/web"
-    os.makedirs(shape_dir, exist_ok=True)
+    base_shape_dir = f"./exp/web"
+    os.makedirs(base_shape_dir, exist_ok=True)
 
     device = f"cuda:{args.gpu_idx}"
 
