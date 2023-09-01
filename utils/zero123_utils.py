@@ -13,6 +13,7 @@ from transformers import CLIPImageProcessor
 from torch import autocast
 from torchvision import transforms
 
+import math
 
 def load_model_from_config(config, ckpt, device, verbose=False):
     print(f'Loading model from {ckpt}')
@@ -57,7 +58,8 @@ def init_model(device, ckpt, half_precision=False):
     return models
 
 @torch.no_grad()
-def sample_model_batch(model, sampler, input_im, xs, ys, n_samples=4, precision='autocast', ddim_eta=1.0, ddim_steps=75, scale=3.0, h=256, w=256):
+def sample_model_batch(model, sampler, input_im, xs, ys, n_samples=4, precision='autocast',
+                        ddim_eta=1.0, ddim_steps=75, scale=3.0, h=256, w=256):
     precision_scope = autocast if precision == 'autocast' else nullcontext
     with precision_scope("cuda"):
         with model.ema_scope():
@@ -176,3 +178,66 @@ def zero123_infer(model, input_dir_path, start_idx=0, end_idx=12, indices=None, 
     delta_y_2 = [0, 0, -10, 10]
     
     infer_stage_2(model, save_path_8, save_path_8_2, delta_x_2, delta_y_2, indices=indices if indices else list(range(start_idx,end_idx)), device=device, ddim_steps=ddim_steps, scale=scale)
+
+# predict behind
+
+@torch.no_grad()
+def sample_model(model, sampler, input_im, x, y, n_samples=4, precision='autocast',
+                        ddim_eta=1.0, ddim_steps=75, scale=3.0, h=256, w=256):
+    precision_scope = autocast if precision == 'autocast' else nullcontext
+    with precision_scope("cuda"):
+        with model.ema_scope():
+            # [n_sample, 1, 768]
+            c = model.get_learned_conditioning(input_im).tile(n_samples, 1, 1)
+            T = []
+            # T.size[4]
+            T = torch.tensor([np.radians(x), np.sin(np.radians(y)), np.cos(np.radians(y)), 0])
+            T = T[None, None, :].repeat(n_samples, 1, 1).float().to(c.device)
+            c = torch.cat([c, T], dim=-1)
+            c = model.cc_projection(c)
+            cond = {}
+            cond['c_crossattn'] = [c]
+            cond['c_concat'] = [model.encode_first_stage(input_im).mode().detach()
+                                .repeat(n_samples, 1, 1, 1)]
+            if scale != 1.0:
+                uc = {}
+                uc['c_concat'] = [torch.zeros(n_samples, 4, h // 8, w // 8).to(c.device)]
+                uc['c_crossattn'] = [torch.zeros_like(c).to(c.device)]
+            else:
+                uc = None
+
+            shape = [4, h // 8, w // 8]
+            samples_ddim, _ = sampler.sample(S=ddim_steps,
+                                             conditioning=cond,
+                                             batch_size=n_samples,
+                                             shape=shape,
+                                             verbose=False,
+                                             unconditional_guidance_scale=scale,
+                                             unconditional_conditioning=uc,
+                                             eta=ddim_eta,
+                                             x_T=None)
+            # print(samples_ddim.shape)
+            # samples_ddim = torch.nn.functional.interpolate(samples_ddim, 64, mode='nearest', antialias=False)
+            x_samples_ddim = model.decode_first_stage(samples_ddim)
+            ret_imgs = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0).cpu()
+            del cond, c, x_samples_ddim, samples_ddim, uc, input_im
+            torch.cuda.empty_cache()
+            return ret_imgs
+
+
+def predict_behind(model, raw_im, save_path = "", device="cuda",
+                    n_samples=3, ddim_steps=75, scale=3.0):
+    input_im_init = np.asarray(raw_im, dtype=np.float32) / 255.0
+    input_im = transforms.ToTensor()(input_im_init).unsqueeze(0).to(device)
+    input_im = input_im * 2 - 1
+
+    output_ims = []
+    sampler = DDIMSampler(model)
+    x_sampler_ddims = sample_model(model, sampler, input_im,  x=0.0, y=180.0, n_samples=n_samples,
+                                    precision='autocast',h=256, w=256, ddim_steps=ddim_steps, 
+                                    scale=scale, ddim_eta=1.0)
+
+    for x_sample in x_sampler_ddims:
+        x_sample = 255.0 * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+        output_ims.append(Image.fromarray(x_sample.astype(np.uint8)))
+    return output_ims
