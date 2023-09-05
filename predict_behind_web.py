@@ -31,42 +31,6 @@ def predict_behind_stage(model, device, exp_dir, input_im, scale, ddim_steps, n_
     return output_ims
 
 
-def predict_behindview(shape_dir, args):
-    device = f"cuda:{args.gpu_idx}"
-
-    # initialize the zero123 model
-    print("half precision: ", args.half_precision)
-    models = init_model(device, 'zero123-ori.ckpt', half_precision=args.half_precision)
-    model_zero123 = models["turncam"]
-
-    # initialize the Segment Anything model
-    predictor = sam_init(args.gpu_idx)
-    input_raw = Image.open(args.img_path)
-
-    # preprocess the input image
-    input_256 = preprocess(predictor, input_raw)
-
-    n_samples = args.n_samples
-    output_ims = predict_behind_stage(model_zero123, device, shape_dir,   
-                                  input_256, scale=3.0, ddim_steps=50, n_samples=n_samples)
-
-    print("draw imgs")
-    # draw images in plt
-    plt.figure(figsize=(16, 4))
-    plt.subplot(1, n_samples+1, 1)
-    plt.imshow(input_raw)
-    plt.title("Input Image")
-    plt.axis('off')
-
-    for i, im in enumerate(output_ims):
-        plt.subplot(1, n_samples+1, i+2)
-        plt.imshow(im)
-        plt.title(f"Output Image {i+1}")
-        plt.axis('off')
-    plt.savefig("result")
-    plt.close()
-    print("Done")
-
 @get('/')
 def upload():
     return '''
@@ -106,7 +70,8 @@ def do_upload():
     input_raw = Image.open(save_path)
     n_samples = args.n_samples
     # preprocess the input image
-    input_256 = preprocess(predictor, input_raw)
+    input_256 = image_preprocess_nosave(input_raw, lower_contrast=False, rescale=True)
+    # input_256 = preprocess(predictor, input_raw)
     output_ims = predict_behind_stage(model_zero123, device, shape_dir,
                                     input_256, scale=3.0, ddim_steps=50, n_samples=n_samples)
     
@@ -128,7 +93,7 @@ if __name__ == "__main__":
     parser.add_argument('--half_precision', action='store_true', help='Use half precision')
     parser.add_argument('--mesh_resolution', type=int, default=256, help='Mesh resolution')
     parser.add_argument('--output_format', type=str, default=".ply", help='Output format: .ply, .obj, .glb')
-    parser.add_argument('--n_samples', type=int, default=1, help='Number of samples')
+    parser.add_argument('--n_samples', type=int, default=3, help='Number of samples')
     args = parser.parse_args()
 
     assert(torch.cuda.is_available())
