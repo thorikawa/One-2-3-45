@@ -11,16 +11,42 @@ import matplotlib.pyplot as plt
 from bottle import route, run, template, request, static_file, url, get, post, response, error, abort, redirect, os
 import datetime
 import uuid
+import numpy as np
+import cv2 
 
 t_delta = datetime.timedelta(hours=9)
 JST = datetime.timezone(t_delta, 'JST')
 
-def preprocess(predictor, raw_im, lower_contrast=False):
-    raw_im.thumbnail([512, 512], Image.Resampling.LANCZOS)
-    image_sam = sam_out_nosave(predictor, raw_im.convert("RGB"), pred_bbox(raw_im))
-    input_256 = image_preprocess_nosave(image_sam, lower_contrast=lower_contrast, rescale=True)
-    torch.cuda.empty_cache()
-    return input_256
+def image_preprocess_crop_info(input_image, lower_contrast=True, rescale=True):
+    # (1024, 626)
+    image_arr = np.array(input_image)
+    in_w, in_h = image_arr.shape[:2]
+
+    if lower_contrast:
+        alpha = 0.8  # Contrast control (1.0-3.0)
+        beta =  0   # Brightness control (0-100)
+        # Apply the contrast adjustment
+        image_arr = cv2.convertScaleAbs(image_arr, alpha=alpha, beta=beta)
+        image_arr[image_arr[...,-1]>200, -1] = 255
+
+    ret, mask = cv2.threshold(np.array(input_image.split()[-1]), 0, 255, cv2.THRESH_BINARY)
+    # 0 0 626 1024
+    x, y, w, h = cv2.boundingRect(mask)
+    max_size = max(w, h)
+    ratio = 0.75
+    if rescale:
+        side_len = int(max_size / ratio)
+    else:
+        side_len = in_w
+    padded_image = np.zeros((side_len, side_len, 4), dtype=np.uint8)
+    center = side_len//2
+    padded_image[center-h//2:center-h//2+h, center-w//2:center-w//2+w] = image_arr[y:y+h, x:x+w]
+    # padded: (1365, 1365, 4)
+    rgba = Image.fromarray(padded_image).resize((256, 256), Image.LANCZOS)
+
+    rgba_arr = np.array(rgba) / 255.0
+    rgb = rgba_arr[...,:3] * rgba_arr[...,-1:] + (1 - rgba_arr[...,-1:])
+    return Image.fromarray((rgb * 255).astype(np.uint8)), (x, y, w, h, side_len, side_len)
 
 def predict_behind_stage(model, device, exp_dir, input_im, scale, ddim_steps, n_samples=3):
     behind_dir = os.path.join(exp_dir, "behind")
@@ -30,6 +56,13 @@ def predict_behind_stage(model, device, exp_dir, input_im, scale, ddim_steps, n_
                                 n_samples=n_samples, ddim_steps=ddim_steps, scale=scale)
     return output_ims
 
+def remove_padding(output_im, crop_info):
+    x, y, w, h, padded_w, padded_h = crop_info
+    resized_output = output_im.resize((padded_w, padded_h), Image.LANCZOS)
+    center = padded_w // 2
+    cropped_output = resized_output.crop((center-w//2, center-h//2, center+w//2, center+h//2))
+    # cropped_output = resized_output.crop((x, y, x+w, y+h))
+    return cropped_output
 
 @get('/')
 def upload():
@@ -58,24 +91,26 @@ def do_upload():
     print(shape_dir)
 
     filename = upload.filename.lower()
-    root, ext = os.path.splitext(filename)
+    # root, ext = os.path.splitext(filename)
     save_path = os.path.join(shape_dir, filename)
     upload.save(save_path, overwrite=True)
 
     device = f"cuda:{args.gpu_idx}"
 
-    # segmentation model
-    predictor = sam_init(args.gpu_idx)
-
     input_raw = Image.open(save_path)
     n_samples = args.n_samples
     # preprocess the input image
-    input_256 = image_preprocess_nosave(input_raw, lower_contrast=False, rescale=True)
-    # input_256 = preprocess(predictor, input_raw)
+    # input_256 = image_preprocess_nosave(input_raw, lower_contrast=False, rescale=True)
+    input_256, crop_info = image_preprocess_crop_info(input_raw, lower_contrast=False, rescale=True)
     output_ims = predict_behind_stage(model_zero123, device, shape_dir,
                                     input_256, scale=3.0, ddim_steps=50, n_samples=n_samples)
     
     saved_paths = []
+
+    for i, im in enumerate(output_ims):
+        im = remove_padding(im, crop_info)
+        output_ims[i] = im
+
     for i, im in enumerate(output_ims):
         saved_path = os.path.join(shape_dir, f"output_{i}.png")
         im.save(saved_path)
